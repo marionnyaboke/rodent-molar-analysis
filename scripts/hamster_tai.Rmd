@@ -1,0 +1,372 @@
+---
+title: "Hamster Tooth Development TAI Analysis"
+output: html_notebook
+---
+
+```{r}
+library(biomaRt)
+library(myTAI)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(tibble)
+library("cowplot")
+
+raw_data <- read.table("table_STAR_mus_ham_TPM.tsv",
+                         sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  
+# Extract gene names from last column and expression data
+gene_names <- raw_data[, ncol(raw_data)]
+expression_data <- raw_data[, -ncol(raw_data)]
+rownames(expression_data) <- gene_names
+```
+
+
+```{r Merge metadata with expres_data and average expression across replicates}
+metadata_mapping <- function() {
+  
+  stage_lookup <- data.frame(
+    Sample_ID = c(
+      "Ham_rep1_md11.0", "Ham_rep1_md11.5", "Ham_rep1_mx11.0", "Ham_rep1_mx11.5",
+      "Ham_rep2_md11.0", "Ham_rep2_md11.5", "Ham_rep2_mx11.0", "Ham_rep2_mx11.5"
+    ),
+    Stage = "BUD",
+    stringsAsFactors = FALSE
+  ) %>%
+    rbind(data.frame(
+      Sample_ID = c(
+        "Ham_rep1_md12.0", "Ham_rep1_md12.5", "Ham_rep1_mx12.0", "Ham_rep1_mx12.5",
+        "Ham_rep2_md11.8", "Ham_rep2_md12.0", "Ham_rep2_md12.5", 
+        "Ham_rep2_mx11.8", "Ham_rep2_mx12.0", "Ham_rep2_mx12.5",
+        "Ham_rep2.1_md12.0", "Ham_rep2.1_mx12.0"
+      ),
+      Stage = "CAP",
+      stringsAsFactors = FALSE
+    )) %>%
+    rbind(data.frame(
+      Sample_ID = c(
+        "Ham_rep1_md13.0", "Ham_rep1_md13.25", "Ham_rep1_md13.5", "Ham_rep1_md13.75", "Ham_rep1_md14.0",
+        "Ham_rep1_mx13.0", "Ham_rep1_mx13.25", "Ham_rep1_mx13.5", "Ham_rep1_mx13.75", "Ham_rep1_mx14.0",
+        "Ham_rep2_md13.0", "Ham_rep2_md13.25", "Ham_rep2_md13.5", "Ham_rep2_md14.0",
+        "Ham_rep2_mx13.0", "Ham_rep2_mx13.25", "Ham_rep2_mx13.5", "Ham_rep2_mx14.0"
+      ),
+      Stage = "BEL",
+      stringsAsFactors = FALSE
+    )) %>%
+    rbind(data.frame(
+      Sample_ID = c(
+        "Ham_rep1_md14.5", "Ham_rep1_mx14.5", "Ham_rep2_md14.5", "Ham_rep2_mx14.5",
+        "Ham_rep2.1_md14.5", "Ham_rep2.1_mx14.5"
+      ),
+      Stage = "DIF",
+      stringsAsFactors = FALSE
+    )) %>%
+    rbind(data.frame(
+      Sample_ID = c(
+        "Ham_rep1_md17.5", "Ham_rep1_md19.5", "Ham_rep1_mx17.5", "Ham_rep1_mx19.5",
+        "Ham_rep2_md17.5", "Ham_rep2_md19.5", "Ham_rep2_mx17.5", "Ham_rep2_mx19.5"
+      ),
+      Stage = "SEC",
+      stringsAsFactors = FALSE
+    ))
+  
+  # Get hamster samples from expression data
+  hamster_samples <- colnames(expression_data)[grepl("^Ham_", colnames(expression_data))]
+  
+  # Create final metadata by matching samples
+  final_metadata <- data.frame(
+    Sample_ID = hamster_samples,
+    stringsAsFactors = FALSE
+  ) %>%
+    left_join(stage_lookup, by = "Sample_ID") %>%
+    filter(!is.na(Stage)) %>%
+    mutate(
+      Species = "Ham",
+      Tissue = str_extract(Sample_ID, "m[dx]"),
+      Tissue_Label = case_when(
+        Tissue == "md" ~ "Mandible",
+        Tissue == "mx" ~ "Maxilla",
+        TRUE ~ "Unknown"
+      )
+    )
+  
+  return(final_metadata)
+}
+
+sample_info <- metadata_mapping()
+
+table(sample_info$Stage, sample_info$Tissue)
+table(sample_info$Stage)
+
+# Process each tissue
+process_tissue <- function(tissue_code, tissue_name) {
+
+  # Get samples for md/mx
+  samples <- sample_info %>% filter(Tissue == tissue_code)
+  
+  # Extract expression data
+  tissue_expr <- expression_data[, samples$Sample_ID]
+  
+  # Average by stage
+  stage_averages <- data.frame(GeneID = rownames(tissue_expr))
+  
+  # Process each stage with log transformation
+  all_stages <- c("BUD", "CAP", "BEL", "DIF", "SEC")
+  for(stage in all_stages) {
+    stage_samples <- samples$Sample_ID[samples$Stage == stage]
+    if(length(stage_samples) > 0) {
+      if(length(stage_samples) == 1) {
+        stage_averages[[stage]] <- log2(tissue_expr[, stage_samples] + 1)
+      } else {
+        stage_averages[[stage]] <- rowMeans(log2(tissue_expr[, stage_samples] + 1), na.rm = TRUE)
+      }
+    } else {
+      stage_averages[[stage]] <- rep(0, nrow(tissue_expr))
+    }
+  }
+  
+  # Remove stages with all zeros
+  stages_with_data <- all_stages[sapply(all_stages, function(s) sum(stage_averages[[s]] > 0) > 0)]
+  stage_averages <- stage_averages[, c("GeneID", stages_with_data)]
+  
+  # Remove genes with all zeros
+  has_expression <- rowSums(stage_averages[, -1]) > 0
+  result <- stage_averages[has_expression, ]
+  
+  return(result)
+}
+
+# Process both tissues
+mandible_data <- process_tissue("md", "Mandible")
+maxilla_data <- process_tissue("mx", "Maxilla")
+
+```
+
+
+```{r phylostratum mapping}
+map_hamster_to_phylostrata_via_orthologs <- function(data, tissue_name) {
+  
+  # Filter to standard gene symbols
+  all_genes <- data$GeneID
+  standard_genes <- all_genes[grepl("^[A-Z][a-z]", all_genes)]
+  
+  if(length(standard_genes) == 0) {
+    return(data.frame(GeneID = character(0), Phylostratum = numeric(0)))
+  }
+  
+  # Set up biomaRt connections
+  ensembl_hamster <- useMart("ensembl", dataset = "mauratus_gene_ensembl")
+  ensembl_mouse <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  
+  # Get hamster - mouse orthologs
+  
+  hamster_to_mouse_orthologs <- getBM(
+    attributes = c("external_gene_name", "mmusculus_homolog_associated_gene_name"),
+    filters = "external_gene_name",
+    values = standard_genes,
+    mart = ensembl_hamster
+  ) %>%
+    filter(!is.na(mmusculus_homolog_associated_gene_name),
+           mmusculus_homolog_associated_gene_name != "") %>%
+    rename(Hamster_Gene = external_gene_name,
+           Mouse_Gene = mmusculus_homolog_associated_gene_name) %>%
+    distinct()
+  
+  print(nrow(hamster_to_mouse_orthologs))
+  
+  # Map mouse orthologs to proteins
+  
+  mouse_gene_to_protein_map <- getBM(
+    attributes = c("external_gene_name", "ensembl_peptide_id"),
+    filters = "external_gene_name",
+    values = hamster_to_mouse_orthologs$Mouse_Gene,
+    mart = ensembl_mouse
+  ) %>%
+    setNames(c("Mouse_Gene", "ProteinID")) %>%
+    filter(!is.na(ProteinID), ProteinID != "") %>%
+    mutate(ProteinID_clean = gsub("\\..*", "", ProteinID))
+  
+  # Map proteins to phylostrata
+  map_mouse_protein <- phylomapr::Mus_musculus_ENSEMBL_GRC38mm10.PhyloMap
+  
+  map_protein_clean <- map_mouse_protein %>%
+    mutate(ProteinID_clean = gsub("\\..*", "", GeneID)) %>%
+    group_by(ProteinID_clean) %>%
+    slice_head(n = 1) %>%
+    ungroup() %>%
+    dplyr::select(ProteinID_clean, Phylostratum)
+  
+  # Create hamster gene - phylostratum mapping
+  hamster_gene_to_phylo <- hamster_to_mouse_orthologs %>%
+    left_join(mouse_gene_to_protein_map, by = "Mouse_Gene") %>%
+    filter(!is.na(ProteinID_clean)) %>%
+    left_join(map_protein_clean, by = "ProteinID_clean") %>%
+    filter(!is.na(Phylostratum)) %>%
+    group_by(Hamster_Gene) %>%
+    summarise(Phylostratum = min(Phylostratum, na.rm = TRUE), .groups = 'drop') %>%
+    rename(GeneID = Hamster_Gene)
+  
+  print(table(hamster_gene_to_phylo$Phylostratum))
+  
+  return(hamster_gene_to_phylo)
+}
+
+# Map both tissues
+mandible_phylo <- map_hamster_to_phylostrata_via_orthologs(mandible_data, "Mandible")
+maxilla_phylo <- map_hamster_to_phylostrata_via_orthologs(maxilla_data, "Maxilla")
+
+```
+
+
+```{r myTAI datasets}
+mytai_dataset <- function(expr_data, phylo_map, tissue_name) {
+  # Merge expression with phylostrata
+  mytai_data <- expr_data %>%
+    inner_join(phylo_map, by = "GeneID") %>%
+    select(Phylostratum, GeneID, everything()) %>%
+    filter(!is.na(Phylostratum), Phylostratum > 0) %>%
+    
+    mutate(
+      Phylostratum = as.numeric(Phylostratum),
+      GeneID = as.character(GeneID)
+    ) %>%
+    # Convert expression columns to numeric
+    mutate(across(3:ncol(.), as.numeric)) %>%
+    as.data.frame()
+  
+  return(mytai_data)
+}
+
+mandible_mytai <- mytai_dataset(mandible_data, mandible_phylo, "Mandible")
+maxilla_mytai <- mytai_dataset(maxilla_data, maxilla_phylo, "Maxilla")
+
+```
+```{r TAI Analysis}
+perform_tai_analysis <- function(mytai_data, tissue_name) {
+  
+  # Create S7 object
+  phylo_set <- as_BulkPhyloExpressionSet(mytai_data)
+  
+  # Compute TAI
+  tai_values <- TAI(phylo_set)
+  
+  # Create results
+  results <- data.frame(
+    Tissue = tissue_name,
+    Stage = names(tai_values),
+    TAI = as.numeric(tai_values),
+    Stage_Order = match(names(tai_values), c("BUD", "CAP", "BEL", "DIF", "SEC")),
+    stringsAsFactors = FALSE
+  )
+  
+  print(results)
+  
+  return(list(
+    results = results, 
+    phylo_set = phylo_set,
+    mytai_data = mytai_data
+  ))
+}
+
+mandible_tai <- perform_tai_analysis(mandible_mytai, "Mandible")
+maxilla_tai <- perform_tai_analysis(maxilla_mytai, "Maxilla")
+
+saveRDS(mandible_tai, "hamster_tai_results.rds")
+```
+
+```{r}
+calculate_phylostratum_trajectories <- function(expression_data, phylostratum_map, tissue_name) {
+  
+  expr_with_phylo <- expression_data %>%
+    inner_join(phylostratum_map, by = "GeneID") %>%
+    filter(!is.na(Phylostratum), Phylostratum > 0)
+  
+  if(nrow(expr_with_phylo) == 0) {
+    return(NULL)
+  }
+  
+  # Filter out phylostrata with <= 5 genes
+  valid_strata <- expr_with_phylo %>%
+    count(Phylostratum) %>%
+    filter(n > 5) %>%
+    pull(Phylostratum)
+  
+  expr_with_phylo <- expr_with_phylo %>%
+    filter(Phylostratum %in% valid_strata)
+  
+  # Get stage columns
+  stage_cols <- setdiff(names(expr_with_phylo), c("GeneID", "Phylostratum"))
+  
+  # Calculate mean expression per phylostratum per stage
+  phylo_trajectories <- expr_with_phylo %>%
+    group_by(Phylostratum) %>%
+    summarise(
+      across(all_of(stage_cols), ~ mean(.x, na.rm = TRUE)),
+      Gene_Count = n(),
+      .groups = 'drop'
+    )%>%
+    # Filter out phylostrata with zero expression in any stage
+    filter(if_all(all_of(stage_cols), ~ .x > 0))
+  
+  # Reshape for analysis
+  trajectory_long <- phylo_trajectories %>%
+    select(-Gene_Count) %>%
+    pivot_longer(
+      cols = -Phylostratum,
+      names_to = "Stage",
+      values_to = "Mean_Expression"
+    ) %>%
+    mutate(
+      Tissue = tissue_name,
+      Stage_Order = match(Stage, c("BUD", "CAP", "BEL", "DIF", "SEC"))
+    ) %>%
+    filter(!is.na(Stage_Order))
+  
+  return(list(
+    trajectories_wide = phylo_trajectories,
+    trajectories_long = trajectory_long,
+    expression_data = expr_with_phylo
+  ))
+}
+
+mandible_trajectories <- calculate_phylostratum_trajectories(mandible_data, mandible_phylo, "Mandible")
+maxilla_trajectories <- calculate_phylostratum_trajectories(maxilla_data, maxilla_phylo, "Maxilla")
+  
+```
+
+
+```{r Combined plot}
+
+mandible_tai$phylo_set@name <- "Mandible"
+maxilla_tai$phylo_set@name <- "Maxilla"
+
+# Panel A - TAI comparison
+bulk_list <- c(mandible_tai$phylo_set, maxilla_tai$phylo_set)
+panel_a <- plot_signature_multiple(bulk_list, legend_title = "Tissue") + 
+  labs(title = "A. Hamster TAI Analysis Across Tooth Development: Mandible vs Maxilla",
+       x = "Developmental Stage", y = "Transcriptome Age Index (TAI)")
+
+# Panel B - Phylostratum trajectories
+phylostratum_trajectories <- bind_rows(
+  mandible_trajectories$trajectories_long %>% mutate(Tissue = "Mandible"),
+  maxilla_trajectories$trajectories_long %>% mutate(Tissue = "Maxilla")
+)
+plot_data <- phylostratum_trajectories %>% mutate(Phylostratum = factor(Phylostratum))
+panel_b <- ggplot(plot_data, aes(x = Stage_Order, y = Mean_Expression, color = Phylostratum, group = Phylostratum)) +
+  geom_line(size = 1, alpha = 0.8) + geom_point(size = 2, alpha = 0.8) +
+  facet_wrap(~Tissue, ncol = 2) +
+  scale_x_continuous(breaks = 1:5, labels = c("BUD", "CAP", "BEL", "DIF", "SEC")) +
+  scale_color_viridis_d(name = "Phylostratum", option = "turbo") +
+  labs(title = "B. Phylostratum Expression Trajectories", x = "Developmental Stage", y = "Mean Log2(Expression + 1)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(size = 14), panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 0.3),
+        axis.text.x = element_text(angle = 0, hjust = 0.3), legend.position = "right") +
+  guides(color = guide_legend(ncol = 1, override.aes = list(size = 2)))
+
+combined_plot <- plot_grid(panel_a, panel_b, ncol = 1, rel_heights = c(1, 1.3), labels = NULL)
+
+ggsave("TAI_combined_mandible_maxilla.pdf", combined_plot, width = 12, height = 12, bg = "white")
+
+```
