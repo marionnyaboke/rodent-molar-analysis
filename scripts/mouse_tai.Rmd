@@ -150,9 +150,10 @@ summary(mandible_data)
 
 map_to_phylostrata <- function(data, tissue_name) {
 
-  # Filter out non-standard gene symbols
+  # Filter genes
   all_genes <- data$GeneID
-  standard_genes <- all_genes[grepl("^[A-Z][a-z]", all_genes)]
+  # standard_genes <- all_genes[grepl("^[A-Z][a-z]", all_genes)]
+  standard_genes <- all_genes[nchar(all_genes) > 0]
   
   # Set up biomaRt
   ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
