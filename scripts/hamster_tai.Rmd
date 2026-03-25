@@ -147,9 +147,10 @@ maxilla_data <- process_tissue("mx", "Maxilla")
 ```{r phylostratum mapping}
 map_hamster_to_phylostrata_via_orthologs <- function(data, tissue_name) {
   
-  # Filter to standard gene symbols
+  # Filter genes
   all_genes <- data$GeneID
-  standard_genes <- all_genes[grepl("^[A-Z][a-z]", all_genes)]
+  # standard_genes <- all_genes[grepl("^[A-Z][a-z]", all_genes)]
+  standard_genes <- all_genes[nchar(all_genes) > 0]
   
   if(length(standard_genes) == 0) {
     return(data.frame(GeneID = character(0), Phylostratum = numeric(0)))
