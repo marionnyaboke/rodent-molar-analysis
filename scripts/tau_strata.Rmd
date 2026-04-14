@@ -1,0 +1,301 @@
+---
+title: "TAU strata"
+output: html_notebook
+---
+
+```{r}
+library(devtools)
+library(BgeeDB)
+library(dplyr)
+library(ggplot2)
+library(biomaRt)
+library(phylomapr)
+
+packageVersion("phylomapr")
+
+# Bgee Object
+bgee <- Bgee$new(species = "Mus_musculus", dataType = "rna_seq")
+
+# all_dev RNA-seq data
+dataMouse <- getSampleProcessedData(bgee,
+                                    experimentId = NULL,
+                                    sampleId = NULL,
+                                    anatEntityId = NULL,
+                                    stageId = NULL)
+
+groupData <- dataMouse %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1)), .groups = 'drop')
+```
+
+
+```{r function to calculate Tau}
+calculate_tau <- function(expression_values, threshold = 0) {
+  expressed_tissues <- sum(expression_values > threshold)
+  
+  if (expressed_tissues >= 1) {
+    T_max <- max(expression_values)
+    normalized_values <- expression_values / T_max
+    tau <- sum(1 - normalized_values) / (length(expression_values) - 1)
+    return(tau)
+  } else {
+    return(NA)
+  }
+}
+```
+
+```{r function to map genes to phylostrata}
+map_genes_to_phylostrata <- function(gene_ids) {
+  ensembl_genes <- gene_ids[grepl("^ENSMUSG", gene_ids)]
+  
+  if(length(ensembl_genes) == 0) {
+    return(data.frame(Gene.ID = character(0), Phylostratum = numeric(0)))
+  }
+  
+  # biomaRt
+  ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  
+  # Convert Ensembl IDs to protein IDs
+  gene_mapping <- getBM(
+    attributes = c("ensembl_gene_id", "external_gene_name", "ensembl_peptide_id"),
+    filters = "ensembl_gene_id",
+    values = ensembl_genes,
+    mart = ensembl
+  ) %>%
+    filter(!is.na(external_gene_name), external_gene_name != "",
+           !is.na(ensembl_peptide_id), ensembl_peptide_id != "") %>%
+    mutate(ProteinID_clean = gsub("\\..*", "", ensembl_peptide_id)) %>%
+    dplyr::select(ensembl_gene_id, external_gene_name, ProteinID_clean) %>%
+    distinct()
+  
+  # phylostratum mapping
+  map_mouse_protein <- phylomapr::Mus_musculus_ENSEMBL_GRC38mm10.PhyloMap
+  
+  map_protein_clean <- map_mouse_protein %>%
+    mutate(ProteinID_clean = gsub("\\..*", "", GeneID)) %>%
+    group_by(ProteinID_clean) %>%
+    slice_head(n = 1) %>%
+    ungroup() %>%
+    dplyr::select(ProteinID_clean, Phylostratum)
+  
+  # Map to phylostrata
+  gene_to_phylo <- gene_mapping %>%
+    inner_join(map_protein_clean, by = "ProteinID_clean") %>%
+    group_by(ensembl_gene_id) %>%
+    summarise(Phylostratum = min(Phylostratum), .groups = 'drop') %>%
+    rename(Gene.ID = ensembl_gene_id)
+  
+  if(nrow(gene_to_phylo) > 0) {
+    print(table(gene_to_phylo$Phylostratum))
+  }
+  
+  return(gene_to_phylo)
+}
+```
+
+```{r analysis function}
+analyze_tau_by_phylostratum <- function(groupData, analysis_name) {
+  # TAU for each gene
+  tau_results <- groupData %>%
+    group_by(Gene.ID) %>%
+    summarise(tau = calculate_tau(TPM), .groups = 'drop') %>%
+    filter(!is.na(tau))
+  
+  # Map genes to phylostrata
+  gene_phylo_map <- map_genes_to_phylostrata(unique(tau_results$Gene.ID))
+  
+  # Merge TAU results with phylostratum data
+  tau_with_phylo <- tau_results %>%
+    inner_join(gene_phylo_map, by = "Gene.ID") %>%
+    filter(!is.na(Phylostratum), Phylostratum > 0)
+  
+  raw_counts <- tau_with_phylo %>%
+    count(Phylostratum, name = "n_expressed")
+  
+  low_strata <- raw_counts %>% filter(n_expressed <= 5) %>% pull(Phylostratum)
+  
+  if (length(low_strata) > 0) {
+    merge_map <- setNames(low_strata - 1, low_strata)
+    tau_with_phylo <- tau_with_phylo %>%
+      mutate(Phylostratum = ifelse(Phylostratum %in% low_strata,
+                                   Phylostratum - 1,
+                                   Phylostratum))
+  }
+  
+  print(nrow(tau_with_phylo))
+  return(list(data = tau_with_phylo, raw_counts = raw_counts, merged_strata = low_strata))
+}
+```
+
+```{r plotting function}
+plot_mean_tau_by_phylostratum <- function(tau_data, analysis_name, merged_strata = c()) {
+  tau_summary <- tau_data %>%
+    group_by(Phylostratum) %>%
+    summarise(
+      n_genes = n(),
+      mean_tau = mean(tau, na.rm = TRUE),
+      se_tau = sd(tau, na.rm = TRUE) / sqrt(n()),
+      .groups = 'drop'
+    ) %>%
+    filter(n_genes >= 5)
+  
+  # labels based on merged strata
+  tau_summary <- tau_summary %>%
+    mutate(PS_label = as.character(Phylostratum))
+  
+  for (s in merged_strata) {
+    target <- s - 1
+    tau_summary <- tau_summary %>%
+      mutate(PS_label = ifelse(Phylostratum == target,
+                               paste0(target, "/", s),
+                               PS_label))
+  }
+  
+  p <- ggplot(tau_summary, aes(x = reorder(PS_label, Phylostratum), y = mean_tau, group = 1)) +    
+    geom_line(size = 1.2, color = "steelblue") +
+    geom_point(aes(size = n_genes), color = "steelblue", alpha = 0.8) +
+    geom_errorbar(aes(ymin = mean_tau - se_tau, ymax = mean_tau + se_tau), 
+                  width = 0.5, color = "steelblue", alpha = 0.7) +
+    scale_size_continuous(name = "Gene Count", range = c(2, 6)) +
+    scale_x_discrete() +
+    labs(
+      title = paste("Mean TAU by Phylostratum -", analysis_name),
+      subtitle = "Error bars show ±SE.",
+      x = "Phylostratum (Evolutionary Age)",
+      y = "Mean TAU"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text = element_text(size = 10),
+      axis.title = element_text(size = 12),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(list(plot = p, summary = tau_summary))
+}
+```
+
+```{r Run analysis- all dev}
+result_all <- analyze_tau_by_phylostratum(groupData, "All Developmental Stages")
+tau_data_all <- result_all$data
+bgee_counts <- result_all$raw_counts %>% rename(rank = Phylostratum)
+
+if(nrow(tau_data_all) > 0) {
+  plot_result_all <- plot_mean_tau_by_phylostratum(result_all$data, "All Developmental
+                                                   Stages", result_all$merged_strata)
+  
+  print(plot_result_all$plot)
+  
+  ggsave("mean_tau_by_phylostratum_alldev.pdf", plot_result_all$plot, width = 12, height = 8, device = "pdf")
+}
+```
+
+```{r Run analysis- embryo}
+dataMouse.embryo <- getSampleProcessedData(bgee,
+                                           experimentId = NULL,
+                                           sampleId = NULL,
+                                           anatEntityId = NULL,
+                                           stageId = "UBERON:0000068", withDescendantStages = TRUE)
+
+groupData.embryo <- dataMouse.embryo %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1)), .groups = 'drop')
+
+result_embryo <- analyze_tau_by_phylostratum(groupData.embryo, "Embryo Stages")
+tau_data_embryo <- result_embryo$data
+bgee_counts_embryo <- result_embryo$raw_counts %>% rename(rank = Phylostratum)
+
+if(nrow(tau_data_embryo) > 0) {
+  plot_result_embryo <- plot_mean_tau_by_phylostratum(tau_data_embryo, "Embryo Stages",
+                                                      result_embryo$merged_strata)
+  
+  print(plot_result_embryo$plot)
+
+  ggsave("mean_tau_by_phylostratum_embryo.pdf", plot_result_embryo$plot, width = 12, height = 8, device = "pdf")
+}
+```
+
+```{r}
+dataMouse.post <- getSampleProcessedData(bgee,
+                                         experimentId = NULL,
+                                         sampleId = NULL,
+                                         anatEntityId = NULL,
+                                         stageId = c("UBERON:0000092", "UBERON:0000113"), withDescendantStages = TRUE)
+
+groupData.post <- dataMouse.post %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1)), .groups = 'drop')
+
+result_post <- analyze_tau_by_phylostratum(groupData.post, "Post-Embryo Stages")
+tau_data_post <- result_post$data
+bgee_counts_post <- result_post$raw_counts %>% rename(rank = Phylostratum)
+
+if(nrow(tau_data_post) > 0) {
+  plot_result_post <- plot_mean_tau_by_phylostratum(tau_data_post, "Post-Embryo Stages",
+                                                    result_post$merged_strata)
+  print(plot_result_post$plot)
+  
+  ggsave("mean_tau_by_phylostratum_post_embryo.pdf", plot_result_post$plot, width = 12, height = 8, device = "pdf")
+}
+```
+```{r phylo_exp_tree}
+bgee_counts <- result_all$raw_counts %>% rename(rank = Phylostratum)
+# bgee_counts <- result_embryo$raw_counts %>% rename(rank = Phylostratum)
+# bgee_counts <- result_post$raw_counts %>% rename(rank = Phylostratum)
+
+gene_ages <- read.delim("/Users/mnyamari/Downloads/Mus_musculus_gene_ages.tsv")
+
+ps_labels <- gene_ages %>%
+  dplyr::select(rank, phylostratum) %>%
+  distinct() %>%
+  arrange(rank)
+
+ps_labels$phylostratum[ps_labels$phylostratum == "cellular organisms"] <- "Cellular organisms"
+
+ps_plot <- ps_labels %>%
+  filter(!is.na(rank)) %>%
+  left_join(bgee_counts, by = "rank") %>%
+  mutate(n_expressed = ifelse(is.na(n_expressed), 0, n_expressed)) %>%
+  arrange(rank)
+
+n <- nrow(ps_plot)
+y <- 1:n
+x <- seq(0.25, 0.75, length.out = n)
+x_line_end <- 0.90
+x_ps_label <- 0.93
+
+pdf("phylostratigraphy_mouse_alls.pdf", width = 14, height = 10)
+layout(matrix(c(1, 2), nrow = 1), widths = c(0.6, 0.4))
+
+par(mar = c(2, 1, 3, 0))
+plot(NULL, xlim = c(0, 1), ylim = c(0.5, n + 0.5),
+     xaxt = "n", yaxt = "n", xlab = "", ylab = "", bty = "n",
+     main = "A. Mouse Phylostratigraphy", font.main = 1)
+for (i in 1:(n - 1)) {
+  segments(x[i], y[i], x[i], y[i + 1], lwd = 1.2)
+  segments(x[i], y[i + 1], x[i + 1], y[i + 1], lwd = 1.2)
+}
+for (i in 1:n) {
+  points(x[i], y[i], pch = 16, cex = 1.0)
+  text(x[i] - 0.02, y[i], ps_plot$phylostratum[i], adj = 1, cex = 0.7)
+  segments(x[i], y[i], x_line_end, y[i], lwd = 0.8)
+  text(x_ps_label, y[i], paste0("PS", ps_plot$rank[i]), adj = 0, cex = 0.5, font = 4)
+}
+
+par(mar = c(2, 0, 3, 3))
+bp <- barplot(ps_plot$n_expressed, horiz = TRUE, col = "black", border = NA,
+              names.arg = rep("", n), space = 0.22,
+              xlim = c(0, max(ps_plot$n_expressed) * 1.25),
+              axes = FALSE)
+text(ps_plot$n_expressed + max(ps_plot$n_expressed) * 0.02, bp,
+     format(ps_plot$n_expressed, big.mark = ","),
+     adj = 0, cex = 0.52)
+tick_vals <- pretty(c(0, max(ps_plot$n_expressed)))
+axis(1, at = tick_vals, labels = FALSE)
+text(tick_vals, par("usr")[3] - 1.2, labels = format(tick_vals, big.mark = ","),
+     cex = 0.5, xpd = TRUE)
+dev.off()
+```
+
+
