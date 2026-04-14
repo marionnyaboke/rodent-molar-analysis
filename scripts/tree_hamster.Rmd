@@ -1,0 +1,92 @@
+---
+title: "Hamster phylostratigraphy"
+output: html_notebook
+---
+
+```{r phylostratigraphy_md_mx}
+library(dplyr)
+
+gene_ages <- read.delim("/Users/mnyamari/Downloads/Mus_musculus_gene_ages.tsv")
+ham_exp <- readRDS("/Users/mnyamari/Desktop/Marion_visualizations_molar_paper/Tau/tai/tai/hamster_tai_results.rds")
+
+ham_exp$mandible$mytai_data
+ham_exp$maxilla$mytai_data
+
+ps_labels <- gene_ages %>%
+  select(rank, phylostratum) %>%
+  distinct() %>%
+  arrange(rank)
+
+ps_labels$phylostratum[ps_labels$phylostratum == "cellular organisms"] <- "Cellular organisms"
+
+# expressed genes count per phylostratum
+md_counts <- ham_exp$mandible$mytai_data %>%
+  count(Phylostratum, name = "Mandible") %>%
+  rename(rank = Phylostratum)
+
+mx_counts <- ham_exp$maxilla$mytai_data %>%
+  count(Phylostratum, name = "Maxilla") %>%
+  rename(rank = Phylostratum)
+```
+
+
+```{r plot}
+ps_plot <- ps_labels %>%
+  filter(!is.na(rank)) %>%
+  left_join(md_counts, by = "rank") %>%
+  left_join(mx_counts, by = "rank") %>%
+  mutate(
+    Mandible = ifelse(is.na(Mandible), 0, Mandible),
+    Maxilla  = ifelse(is.na(Maxilla), 0, Maxilla),
+    n_total  = Mandible + Maxilla
+  ) %>%
+  arrange(rank)
+
+sum(ps_plot$Mandible)
+sum(ps_plot$Maxilla)
+print(ps_plot)
+
+n <- nrow(ps_plot)
+y <- 1:n
+x <- seq(0.25, 0.75, length.out = n)
+x_line_end <- 0.90
+x_ps_label <- 0.93
+
+pdf("phylostratigraphy_hamster_md_mx.pdf", width = 14, height = 10)
+layout(matrix(c(1, 2), nrow = 1), widths = c(0.6, 0.4))
+
+# Panel 1
+par(mar = c(2, 1, 3, 0))
+plot(NULL, xlim = c(0, 1), ylim = c(0.5, n + 0.5),
+     xaxt = "n", yaxt = "n", xlab = "", ylab = "", bty = "n",
+     main = "A. Hamster Phylostratigraphy", font.main = 1, cex.main = 1.4)
+
+for (i in 1:(n - 1)) {
+  segments(x[i], y[i], x[i], y[i + 1], lwd = 1.2)
+  segments(x[i], y[i + 1], x[i + 1], y[i + 1], lwd = 1.2)
+}
+for (i in 1:n) {
+  points(x[i], y[i], pch = 16, cex = 0.6)
+  text(x[i] - 0.02, y[i], ps_plot$phylostratum[i], adj = 1, cex = 0.7)
+  segments(x[i], y[i], x_line_end, y[i], lwd = 0.8)
+  text(x_ps_label, y[i], paste0("PS", ps_plot$rank[i]), adj = 0, cex = 0.5, font = 4)
+}
+
+# Panel 2
+par(mar = c(2, 0, 3, 3))
+tick_vals <- seq(0, 10000, by = 2000)
+xlim_max <- 12000
+
+bp <- barplot(ps_plot$Mandible, horiz = TRUE, col = "black", border = NA,
+              names.arg = rep("", n), space = 0.22,
+              xlim = c(0, xlim_max),
+              axes = FALSE)
+text(ps_plot$Mandible + xlim_max * 0.01, bp,
+     paste0(format(ps_plot$Mandible, big.mark = ","), " (md) | ",
+            format(ps_plot$Maxilla, big.mark = ","), " (mx)"),
+     adj = 0, cex = 0.50)
+axis(1, at = tick_vals, labels = FALSE)
+text(tick_vals, par("usr")[3] - 1.2, labels = format(tick_vals, big.mark = ","),
+     cex = 0.5, xpd = TRUE)
+dev.off()
+```
