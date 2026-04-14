@@ -78,7 +78,6 @@ map_genes_to_phylostrata <- function(gene_ids) {
     ungroup() %>%
     dplyr::select(ProteinID_clean, Phylostratum)
   
-  # Map to phylostrata
   gene_to_phylo <- gene_mapping %>%
     inner_join(map_protein_clean, by = "ProteinID_clean") %>%
     group_by(ensembl_gene_id) %>%
@@ -104,7 +103,7 @@ analyze_tau_by_phylostratum <- function(groupData, analysis_name) {
   # Map genes to phylostrata
   gene_phylo_map <- map_genes_to_phylostrata(unique(tau_results$Gene.ID))
   
-  # Merge TAU results with phylostratum data
+  # Merge Tau results with phylostratum data
   tau_with_phylo <- tau_results %>%
     inner_join(gene_phylo_map, by = "Gene.ID") %>%
     filter(!is.na(Phylostratum), Phylostratum > 0)
@@ -244,7 +243,7 @@ bgee_counts <- result_all$raw_counts %>% rename(rank = Phylostratum)
 # bgee_counts <- result_embryo$raw_counts %>% rename(rank = Phylostratum)
 # bgee_counts <- result_post$raw_counts %>% rename(rank = Phylostratum)
 
-gene_ages <- read.delim("/Users/mnyamari/Downloads/Mus_musculus_gene_ages.tsv")
+gene_ages <- read.delim("Mus_musculus_gene_ages.tsv")
 
 ps_labels <- gene_ages %>%
   dplyr::select(rank, phylostratum) %>%
