@@ -215,7 +215,7 @@ if(nrow(tau_data_embryo) > 0) {
 }
 ```
 
-```{r}
+```{r run_analysis_post_embryo}
 dataMouse.post <- getSampleProcessedData(bgee,
                                          experimentId = NULL,
                                          sampleId = NULL,
