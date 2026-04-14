@@ -34,7 +34,6 @@ unique_gene_count <- length(unique(groupData$Gene.ID))
 print(unique_gene_count)
 ```
 
-
 ```{r Function to calculate Tau}
 calculate_tau <- function(expression_values, threshold = 0) {
 
