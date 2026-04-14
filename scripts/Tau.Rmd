@@ -18,7 +18,7 @@ listBgeeSpecies(release = "15.2", order = 2)
 # Bgee Object
 bgee <- Bgee$new(species = "Mus_musculus", dataType = "rna_seq")
 
-### Download all_dev RNA-seq data
+# Download all_dev RNA-seq data
 dataMouse <- getSampleProcessedData(bgee, 
                                     experimentId = NULL, 
                                     sampleId = NULL, 
@@ -58,8 +58,7 @@ tau_results <- groupData %>%
 saveRDS(tau_results, "alldev_tau_results.rds", row.names = FALSE)
 ```
 
-
-```{r embryo}
+```{r embryo-analysis}
 dataMouse.embryo <- getSampleProcessedData(bgee, 
                                            experimentId = NULL, 
                                            sampleId = NULL, 
@@ -75,11 +74,10 @@ embryo_tau_results <- groupData.embryo %>%
   group_by(Gene.ID) %>% 
   summarise(tau = calculate_tau(TPM))  
 
-saveEDS(embryo_tau_results, "embryo_tau_results.rds", row.names = FALSE)
+saveRDS(embryo_tau_results, "embryo_tau_results.rds", row.names = FALSE)
 ```
 
-
-```{r post-embryo}
+```{r post-embryo-analysis}
 dataMouse.post <- getSampleProcessedData(bgee, 
                                          experimentId = NULL, 
                                          sampleId = NULL, 
