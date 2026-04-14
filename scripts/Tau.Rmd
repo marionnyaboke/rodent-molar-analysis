@@ -1,0 +1,100 @@
+---
+title: "Tau"
+output: html_notebook
+---
+
+```{r}
+library(devtools)
+# install_github(repo = "https://github.com/BgeeDB/BgeeDB_R", ref = "devel")
+library(BgeeDB)
+library(dplyr)
+library(gridExtra)
+library(ggplot2)
+
+packageVersion("BgeeDB")
+
+listBgeeSpecies(release = "15.2", order = 2)
+
+# Bgee Object
+bgee <- Bgee$new(species = "Mus_musculus", dataType = "rna_seq")
+
+### Download all_dev RNA-seq data
+dataMouse <- getSampleProcessedData(bgee, 
+                                    experimentId = NULL, 
+                                    sampleId = NULL, 
+                                    anatEntityId = , 
+                                    stageId = NULL)
+
+groupData <- dataMouse %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1)))
+
+unique_gene_count <- length(unique(groupData$Gene.ID))
+
+print(unique_gene_count)
+```
+
+
+```{r Function to calculate Tau}
+calculate_tau <- function(expression_values, threshold = 0) {
+
+  # calculate tau if at least one tissue has expression greater than 0
+  expressed_tissues <- sum(expression_values > threshold)
+  
+  if (expressed_tissues >= 1) {
+    T_max <- max(expression_values)
+    normalized_values <- expression_values / T_max
+    tau <- sum(1 - normalized_values) / (length(expression_values) - 1)
+    return(tau)
+  } else {
+    return(NA)
+  }
+}
+
+tau_results <- groupData %>%
+  group_by(Gene.ID) %>%  
+  summarise(tau = calculate_tau(TPM)) 
+
+saveRDS(tau_results, "alldev_tau_results.rds", row.names = FALSE)
+```
+
+
+```{r embryo}
+dataMouse.embryo <- getSampleProcessedData(bgee, 
+                                           experimentId = NULL, 
+                                           sampleId = NULL, 
+                                           anatEntityId = NULL, 
+                                           stageId = "UBERON:0000068", withDescendantStages = TRUE)
+
+groupData.embryo <- dataMouse.embryo %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1))) 
+
+# Group data by Gene.ID and calculate Tau for each gene
+embryo_tau_results <- groupData.embryo %>%
+  group_by(Gene.ID) %>% 
+  summarise(tau = calculate_tau(TPM))  
+
+saveEDS(embryo_tau_results, "embryo_tau_results.rds", row.names = FALSE)
+```
+
+
+```{r post-embryo}
+dataMouse.post <- getSampleProcessedData(bgee, 
+                                         experimentId = NULL, 
+                                         sampleId = NULL, 
+                                         anatEntityId = NULL, 
+                                         stageId = c("UBERON:0000092", "UBERON:0000113"), withDescendantStages = TRUE)
+
+groupData.post <- dataMouse.post %>%
+  group_by(Gene.ID, Anatomical.entity.name) %>% 
+  summarise_at(vars("TPM"), ~mean(log(. + 1)))
+
+# Group data by Gene.ID and calculate Tau for each gene
+post_tau_results <- groupData.post %>%
+  group_by(Gene.ID) %>% 
+  summarise(tau = calculate_tau(TPM))
+
+saveRDS(post_tau_results, "post_embryo_tau_results.rds", row.names = FALSE)
+```
+
