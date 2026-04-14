@@ -6,8 +6,8 @@ output: html_notebook
 ```{r phylostratigraphy_md_mx}
 library(dplyr)
 
-gene_ages <- read.delim("/Users/mnyamari/Downloads/Mus_musculus_gene_ages.tsv")
-mouse_exp <- readRDS("/Users/mnyamari/Desktop/Marion_visualizations_molar_paper/Tau/tai/tai/mouse_tai_results.rds")
+gene_ages <- read.delim("Mus_musculus_gene_ages.tsv")
+mouse_exp <- readRDS("mouse_tai_results.rds")
 
 mouse_exp$mandible$mytai_data
 mouse_exp$maxilla$mytai_data
@@ -28,7 +28,6 @@ mx_counts <- mouse_exp$maxilla$mytai_data %>%
   count(Phylostratum, name = "Maxilla") %>%
   rename(rank = Phylostratum)
 ```
-
 
 ```{r plot}
 ps_plot <- ps_labels %>%
